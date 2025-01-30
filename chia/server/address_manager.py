@@ -6,7 +6,7 @@ import time
 from asyncio import Lock
 from random import choice, randrange
 from secrets import randbits
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Optional
 
 from chia.types.peer_info import PeerInfo, TimestampedPeerInfo
 from chia.util.hash import std_hash
@@ -69,7 +69,7 @@ class ExtendedPeerInfo:
         return out
 
     @classmethod
-    def from_string(cls, peer_str: str):
+    def from_string(cls, peer_str: str) -> ExtendedPeerInfo:
         blobs = peer_str.split(" ")
         assert len(blobs) == 5
         peer_info = TimestampedPeerInfo(blobs[0], uint16(int(blobs[1])), uint64(int(blobs[2])))
@@ -81,7 +81,7 @@ class ExtendedPeerInfo:
             bytes(std_hash(key.to_bytes(32, byteorder="big") + self.peer_info.get_key())[:8]),
             byteorder="big",
         )
-        hash1 = hash1 % TRIED_BUCKETS_PER_GROUP
+        hash1 %= TRIED_BUCKETS_PER_GROUP
         hash2 = int.from_bytes(
             bytes(std_hash(key.to_bytes(32, byteorder="big") + self.peer_info.get_group() + bytes([hash1]))[:8]),
             byteorder="big",
@@ -96,7 +96,7 @@ class ExtendedPeerInfo:
             bytes(std_hash(key.to_bytes(32, byteorder="big") + self.peer_info.get_group() + src_peer.get_group())[:8]),
             byteorder="big",
         )
-        hash1 = hash1 % NEW_BUCKETS_PER_SOURCE_GROUP
+        hash1 %= NEW_BUCKETS_PER_SOURCE_GROUP
         hash2 = int.from_bytes(
             bytes(std_hash(key.to_bytes(32, byteorder="big") + src_peer.get_group() + bytes([hash1]))[:8]),
             byteorder="big",
@@ -143,7 +143,7 @@ class ExtendedPeerInfo:
 
         return False
 
-    def get_selection_chance(self, now: Optional[int] = None):
+    def get_selection_chance(self, now: Optional[int] = None) -> float:
         if now is None:
             now = int(math.floor(time.time()))
         chance = 1.0
@@ -162,17 +162,17 @@ class ExtendedPeerInfo:
 class AddressManager:
     id_count: int
     key: int
-    random_pos: List[int]
-    tried_matrix: List[List[int]]
-    new_matrix: List[List[int]]
+    random_pos: list[int]
+    tried_matrix: list[list[int]]
+    new_matrix: list[list[int]]
     tried_count: int
     new_count: int
-    map_addr: Dict[str, int]
-    map_info: Dict[int, ExtendedPeerInfo]
+    map_addr: dict[str, int]
+    map_info: dict[int, ExtendedPeerInfo]
     last_good: int
-    tried_collisions: List[int]
-    used_new_matrix_positions: Set[Tuple[int, int]]
-    used_tried_matrix_positions: Set[Tuple[int, int]]
+    tried_collisions: list[int]
+    used_new_matrix_positions: set[tuple[int, int]]
+    used_tried_matrix_positions: set[tuple[int, int]]
     allow_private_subnets: bool
 
     def __init__(self) -> None:
@@ -230,7 +230,7 @@ class AddressManager:
                 if self.tried_matrix[bucket][pos] != -1:
                     self.used_tried_matrix_positions.add((bucket, pos))
 
-    def create_(self, addr: TimestampedPeerInfo, addr_src: Optional[PeerInfo]) -> Tuple[ExtendedPeerInfo, int]:
+    def create_(self, addr: TimestampedPeerInfo, addr_src: Optional[PeerInfo]) -> tuple[ExtendedPeerInfo, int]:
         self.id_count += 1
         node_id = self.id_count
         self.map_info[node_id] = ExtendedPeerInfo(addr, addr_src)
@@ -239,7 +239,7 @@ class AddressManager:
         self.random_pos.append(node_id)
         return (self.map_info[node_id], node_id)
 
-    def find_(self, addr: PeerInfo) -> Tuple[Optional[ExtendedPeerInfo], Optional[int]]:
+    def find_(self, addr: PeerInfo) -> tuple[Optional[ExtendedPeerInfo], Optional[int]]:
         if addr.host not in self.map_addr:
             return (None, None)
         node_id = self.map_addr[addr.host]
@@ -300,14 +300,14 @@ class AddressManager:
     def mark_good_(self, addr: PeerInfo, test_before_evict: bool, timestamp: int) -> None:
         self.last_good = timestamp
         (info, node_id) = self.find_(addr)
-        if not addr.is_valid(self.allow_private_subnets):
+        if addr.ip.is_private and not self.allow_private_subnets:
             return None
         if info is None:
             return None
         if node_id is None:
             return None
 
-        if not (info.peer_info.host == addr.host and info.peer_info.port == addr.port):
+        if info.peer_info != addr:
             return None
 
         # update info
@@ -365,10 +365,10 @@ class AddressManager:
             addr.host,
             addr.port,
         )
-        if not peer_info.is_valid(self.allow_private_subnets):
+        if peer_info.ip.is_private and not self.allow_private_subnets:
             return False
         (info, node_id) = self.find_(peer_info)
-        if info is not None and info.peer_info.host == addr.host and info.peer_info.port == addr.port:
+        if info is not None and info.peer_info == peer_info:
             penalty = 0
 
         if info is not None:
@@ -426,7 +426,7 @@ class AddressManager:
         if info is None:
             return None
 
-        if not (info.peer_info.host == addr.host and info.peer_info.port == addr.port):
+        if info.peer_info != addr:
             return None
 
         info.last_try = timestamp
@@ -445,7 +445,7 @@ class AddressManager:
         if not new_only and self.tried_count > 0 and (self.new_count == 0 or randrange(2) == 0):
             chance = 1.0
             start = time.time()
-            cached_tried_matrix_positions: List[Tuple[int, int]] = []
+            cached_tried_matrix_positions: list[tuple[int, int]] = []
             if len(self.used_tried_matrix_positions) < math.sqrt(TRIED_BUCKET_COUNT * BUCKET_SIZE):
                 cached_tried_matrix_positions = list(self.used_tried_matrix_positions)
             while True:
@@ -475,7 +475,7 @@ class AddressManager:
         else:
             chance = 1.0
             start = time.time()
-            cached_new_matrix_positions: List[Tuple[int, int]] = []
+            cached_new_matrix_positions: list[tuple[int, int]] = []
             if len(self.used_new_matrix_positions) < math.sqrt(NEW_BUCKET_COUNT * BUCKET_SIZE):
                 cached_new_matrix_positions = list(self.used_new_matrix_positions)
             while True:
@@ -542,11 +542,9 @@ class AddressManager:
         old_id = self.tried_matrix[tried_bucket][tried_bucket_pos]
         return self.map_info[old_id]
 
-    def get_peers_(self) -> List[TimestampedPeerInfo]:
-        addr: List[TimestampedPeerInfo] = []
-        num_nodes = math.ceil(23 * len(self.random_pos) / 100)
-        if num_nodes > 1000:
-            num_nodes = 1000
+    def get_peers_(self) -> list[TimestampedPeerInfo]:
+        addr: list[TimestampedPeerInfo] = []
+        num_nodes = min(1000, math.ceil(23 * len(self.random_pos) / 100))
         for n in range(len(self.random_pos)):
             if len(addr) >= num_nodes:
                 return addr
@@ -554,7 +552,7 @@ class AddressManager:
             rand_pos = randrange(len(self.random_pos) - n) + n
             self.swap_random_(n, rand_pos)
             info = self.map_info[self.random_pos[n]]
-            if not info.peer_info.is_valid(self.allow_private_subnets):
+            if info.peer_info.ip.is_private and not self.allow_private_subnets:
                 continue
             if not info.is_terrible():
                 cur_peer_info = TimestampedPeerInfo(
@@ -566,7 +564,7 @@ class AddressManager:
 
         return addr
 
-    def cleanup(self, max_timestamp_difference: int, max_consecutive_failures: int):
+    def cleanup(self, max_timestamp_difference: int, max_consecutive_failures: int) -> None:
         now = int(math.floor(time.time()))
         for bucket in range(NEW_BUCKET_COUNT):
             for pos in range(BUCKET_SIZE):
@@ -579,13 +577,13 @@ class AddressManager:
                     ):
                         self.clear_new_(bucket, pos)
 
-    def connect_(self, addr: PeerInfo, timestamp: int):
+    def connect_(self, addr: PeerInfo, timestamp: int) -> None:
         info, _ = self.find_(addr)
         if info is None:
             return None
 
         # check whether we are talking about the exact same peer
-        if not (info.peer_info.host == addr.host and info.peer_info.port == addr.port):
+        if info.peer_info != addr:
             return None
 
         update_interval = 20 * 60
@@ -598,7 +596,7 @@ class AddressManager:
 
     async def add_to_new_table(
         self,
-        addresses: List[TimestampedPeerInfo],
+        addresses: list[TimestampedPeerInfo],
         source: Optional[PeerInfo] = None,
         penalty: int = 0,
     ) -> bool:
@@ -615,7 +613,7 @@ class AddressManager:
         addr: PeerInfo,
         test_before_evict: bool = True,
         timestamp: int = -1,
-    ):
+    ) -> None:
         if timestamp == -1:
             timestamp = math.floor(time.time())
         async with self.lock:
@@ -627,14 +625,14 @@ class AddressManager:
         addr: PeerInfo,
         count_failures: bool,
         timestamp: int = -1,
-    ):
+    ) -> None:
         if timestamp == -1:
             timestamp = math.floor(time.time())
         async with self.lock:
             self.attempt_(addr, count_failures, timestamp)
 
     # See if any to-be-evicted tried table entries have been tested and if so resolve the collisions.
-    async def resolve_tried_collisions(self):
+    async def resolve_tried_collisions(self) -> None:
         async with self.lock:
             self.resolve_tried_collisions_()
 
@@ -649,12 +647,12 @@ class AddressManager:
             return self.select_peer_(new_only)
 
     # Return a bunch of addresses, selected at random.
-    async def get_peers(self) -> List[TimestampedPeerInfo]:
+    async def get_peers(self) -> list[TimestampedPeerInfo]:
         async with self.lock:
             return self.get_peers_()
 
-    async def connect(self, addr: PeerInfo, timestamp: int = -1):
+    async def connect(self, addr: PeerInfo, timestamp: int = -1) -> None:
         if timestamp == -1:
             timestamp = math.floor(time.time())
         async with self.lock:
-            return self.connect_(addr, timestamp)
+            self.connect_(addr, timestamp)

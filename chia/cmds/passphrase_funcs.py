@@ -1,28 +1,19 @@
-import click
-import colorama
+from __future__ import annotations
+
 import os
 import sys
-import time
-
-from chia.daemon.client import acquire_connection_to_daemon
-from chia.util.config import load_config
-from chia.util.errors import KeychainMaxUnlockAttempts
-from chia.util.keychain import Keychain, supports_os_passphrase_storage
-from chia.util.keyring_wrapper import KeyringWrapper, DEFAULT_PASSPHRASE_IF_NO_MASTER_PASSPHRASE
-from chia.util.misc import prompt_yes_no
-from chia.util.ws_message import WsRpcMessage
 from getpass import getpass
 from io import TextIOWrapper
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Optional
 
+import click
+import colorama
 
-DEFAULT_PASSPHRASE_PROMPT = (
-    colorama.Fore.YELLOW + colorama.Style.BRIGHT + "(Unlock Keyring)" + colorama.Style.RESET_ALL + " Passphrase: "
-)  # noqa: E501
-FAILED_ATTEMPT_DELAY = 0.5
-MAX_KEYS = 100
-MAX_RETRIES = 3
+from chia.daemon.client import acquire_connection_to_daemon
+from chia.util.keychain import Keychain, supports_os_passphrase_storage
+from chia.util.keyring_wrapper import DEFAULT_PASSPHRASE_IF_NO_MASTER_PASSPHRASE, obtain_current_passphrase
+
 SAVE_MASTER_PASSPHRASE_WARNING = (
     colorama.Fore.YELLOW
     + colorama.Style.BRIGHT
@@ -33,49 +24,9 @@ SAVE_MASTER_PASSPHRASE_WARNING = (
 )
 
 
-def obtain_current_passphrase(prompt: str = DEFAULT_PASSPHRASE_PROMPT, use_passphrase_cache: bool = False) -> str:
-    """
-    Obtains the master passphrase for the keyring, optionally using the cached
-    value (if previously set). If the passphrase isn't already cached, the user is
-    prompted interactively to enter their passphrase a max of MAX_RETRIES times
-    before failing.
-    """
-
-    if use_passphrase_cache:
-        passphrase, validated = KeyringWrapper.get_shared_instance().get_cached_master_passphrase()
-        if passphrase:
-            # If the cached passphrase was previously validated, we assume it's... valid
-            if validated:
-                return passphrase
-
-            # Cached passphrase needs to be validated
-            if KeyringWrapper.get_shared_instance().master_passphrase_is_valid(passphrase):
-                KeyringWrapper.get_shared_instance().set_cached_master_passphrase(passphrase, validated=True)
-                return passphrase
-            else:
-                # Cached passphrase is bad, clear the cache
-                KeyringWrapper.get_shared_instance().set_cached_master_passphrase(None)
-
-    # Prompt interactively with up to MAX_RETRIES attempts
-    for i in range(MAX_RETRIES):
-        colorama.init()
-
-        passphrase = prompt_for_passphrase(prompt)
-
-        if KeyringWrapper.get_shared_instance().master_passphrase_is_valid(passphrase):
-            # If using the passphrase cache, and the user inputted a passphrase, update the cache
-            if use_passphrase_cache:
-                KeyringWrapper.get_shared_instance().set_cached_master_passphrase(passphrase, validated=True)
-            return passphrase
-
-        time.sleep(FAILED_ATTEMPT_DELAY)
-        print("Incorrect passphrase\n")
-    raise KeychainMaxUnlockAttempts()
-
-
 def verify_passphrase_meets_requirements(
     new_passphrase: str, confirmation_passphrase: str
-) -> Tuple[bool, Optional[str]]:
+) -> tuple[bool, Optional[str]]:
     match = new_passphrase == confirmation_passphrase
     min_length = Keychain.minimum_passphrase_length()
     meets_len_requirement = len(new_passphrase) >= min_length
@@ -88,13 +39,6 @@ def verify_passphrase_meets_requirements(
         return False, f"Minimum passphrase length is {min_length}"
     else:
         raise Exception("Unexpected passphrase verification case")
-
-
-def prompt_for_passphrase(prompt: str) -> str:
-    if sys.platform == "win32" or sys.platform == "cygwin":
-        print(prompt, end="")
-        prompt = ""
-    return getpass(prompt)
 
 
 def prompt_to_save_passphrase() -> bool:
@@ -124,7 +68,7 @@ def prompt_to_save_passphrase() -> bool:
                 colorama.init()
 
                 print(warning)
-            save = prompt_yes_no(f"Would you like to save your passphrase to the {location}?")
+            save = click.confirm(f"Would you like to save your passphrase to the {location}?", default=None)
 
     except Exception as e:
         print(f"Caught exception: {e}")
@@ -133,7 +77,7 @@ def prompt_to_save_passphrase() -> bool:
     return save
 
 
-def prompt_for_new_passphrase() -> Tuple[str, bool]:
+def prompt_for_new_passphrase() -> tuple[str, bool]:
     min_length: int = Keychain.minimum_passphrase_length()
     if min_length > 0:
         n = min_length
@@ -326,7 +270,7 @@ def remove_passphrase_hint() -> None:
         print("Passphrase hint was not removed")
 
 
-async def async_update_daemon_passphrase_cache_if_running(root_path: Path, config: Dict[str, Any]) -> None:
+async def async_update_daemon_passphrase_cache_if_running(root_path: Path, config: dict[str, Any]) -> None:
     """
     Attempt to connect to the daemon and update the cached passphrase
     """
@@ -346,26 +290,3 @@ async def async_update_daemon_passphrase_cache_if_running(root_path: Path, confi
                     raise Exception(error)
     except Exception as e:
         print(f"Failed to notify daemon of updated keyring passphrase: {e}")
-
-
-async def async_update_daemon_migration_completed_if_running() -> None:
-    """
-    Attempt to connect to the daemon to notify that keyring migration has completed.
-    This allows the daemon to refresh its keyring so that it can stop using the
-    legacy keyring.
-    """
-    ctx: click.Context = click.get_current_context()
-    root_path: Path = ctx.obj["root_path"]
-
-    if root_path is None:
-        print("Missing root_path in context. Unable to notify daemon")
-        return None
-
-    async with acquire_connection_to_daemon(root_path, load_config(root_path, "config.yaml"), quiet=True) as daemon:
-        if daemon is not None:
-            passphrase: str = Keychain.get_cached_master_passphrase()
-
-            print("Updating daemon... ", end="")
-            response: WsRpcMessage = await daemon.notify_keyring_migration_completed(passphrase)
-            success: bool = response.get("data", {}).get("success", False)
-            print("succeeded" if success is True else "failed")
